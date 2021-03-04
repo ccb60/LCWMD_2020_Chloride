@@ -1,0 +1,351 @@
+---
+title: "LCWMD Chloride Data Analysis"
+author: "Curtis C. Bohlen"
+date: "3/2/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      fig.align = 'center',
+                      fig.width = 5, fig.height = 4,
+                      collapse = TRUE, comment = "#>")
+```
+
+
+# Load Libraries
+(code omitted)
+```{r echo = FALSE}
+library(fitdistrplus)  # Loads MASS, which has `select()`, so load first
+library(tidyverse)
+library(readxl)
+
+library(mblm)
+
+#library(lme4)
+library(emmeans)
+
+library(CBEPgraphics)
+load_cbep_fonts()
+theme_set(theme_cbep())
+```
+
+
+# Load Data
+```{r warning = FALSE}
+chl_data <- read_excel("Chloride Regression Statistics -2020 End Of Year.xlsx", 
+                       sheet = 'SpC&Cl Data',
+                       col_types = c("text", "text", "text", 
+                                     "date", "date", "skip", "numeric", 
+                                     "skip", "numeric", "skip", "skip", 
+                                     "skip", "skip", "skip"),
+                       .name_repair = 'universal') %>%
+  rename(Chloride = Result) %>%
+  mutate(Month = as.numeric(format(Sample.Date, format = '%m')),
+         Month = factor(Month, levels = 1:12, labels = month.abb),
+         Year  = factor(format(Sample.Date, format = '%Y'))) %>%
+  mutate(Site.ID = fct_reorder(Site.ID, Chloride))
+```
+
+# Flag Outliers
+```{r}
+chl_data <- chl_data %>%
+  mutate(Outlier = Chloride > 1500)
+```
+
+# Plot Data
+```{r fig.width = 7}
+ggplot(chl_data, aes(x = SpC, y = Chloride, color = Sample.Type)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = 'lm', se = FALSE) +
+  scale_color_manual(values = cbep_colors())
+```
+
+
+
+
+# Simple Linear Regression
+```{r}
+all_lm <- lm(Chloride ~ SpC, data = chl_data)
+summary(all_lm)
+```
+
+
+```{r}
+plot(all_lm)
+```
+
+#Reviewing Residuals
+So the regression diagnostics clearly show the residuals deviate substantially
+from a normal distribution.  The strongest deviations are from our two outliers
+(# 721 and 722), but even in their absence, the residuals are kurtotic and
+slightly skewed.  There is also a small scale - location relationship, which
+is probably to be expected.
+
+```{r}
+df <- tibble(r = resid(all_lm))
+
+ggplot(df, aes(r)) +
+  geom_histogram(aes(y = ..density..)) +
+  geom_function(fun = dnorm,
+                args = list(mean = mean(df$r), 
+                sd = sd(df$r)))
+```
+It suggests a different model form may be more useful
+
+# Cullen and Frey Moments Graph
+```{r}
+descdist(df$r, boot = 1000)
+```
+
+Which is little help.  That suggest the distributional properties are not too
+far from a gamma distribution, but the gamma distribution is defined
+over the positive real numbers, and our residuals (by definition) have mean 
+zero.
+
+# Omitting Outliser
+```{r}
+wo_lm <- lm(Chloride ~ SpC, data = chl_data, subset = ! Outlier)
+summary(wo_lm)
+```
+
+```{r}
+plot(wo_lm)
+```
+
+It's still not a great model, give the structure of the errors.  The kurtotic 
+pattern of the residuals remains.  It suggests a model that has left out some
+important predictor variables
+
+
+# Robust Regression
+We are using a Modified "Thiel-Sen Estimator" which is highly resistant to
+outliers.
+```{r}
+robust_lm <- mblm(Chloride ~ SpC, data = chl_data)
+summary(robust_lm)
+```
+
+# Compare Simple Linear Models
+```{r}
+df <- tibble(SpC = seq(0, 3500, 100))
+
+
+p_all <- predict(all_lm, newdata = df, interval = "prediction")
+p_wo  <- predict(wo_lm, newdata = df, interval = "prediction")
+p_robust <- predict(robust_lm, newdata = df, interval = "prediction")
+
+df <- df %>%
+  mutate( pp_all = p_all[,1], pp_wo = p_wo[,1], pp_robust = p_robust[,1]) %>%
+  mutate( low_all = p_all[,2], low_wo = p_wo[,2], low_robust = p_robust[,2]) %>%
+  mutate( hi_all = p_all[,3], hi_wo = p_wo[,3], hi_robust = p_robust[,3])
+```
+
+
+```{r}
+ggplot(df, (aes(x = SpC))) +
+  geom_point(data = chl_data, 
+             mapping = aes(SpC, Chloride), alpha = 0.1) +
+  #geom_smooth(data = chl_data, mapping = aes(SpC, Chloride), 
+  #            method = lm, formula = y~ poly(x,2), se = FALSE) +
+  geom_line(aes(y = pp_all), color = 'black') +
+  geom_ribbon(aes(ymin = low_all, ymax = hi_all), alpha = 0.1, fill = 'black') +
+  geom_line(data = df, mapping = aes(SpC, pp_wo), color = 'red') +
+  geom_ribbon(aes(ymin = low_wo, ymax = hi_wo), alpha = 0.1, fill = 'red') +
+  geom_line(data = df, mapping = aes(SpC, pp_robust), color = 'blue') +
+  geom_ribbon(aes(ymin = low_robust, ymax = hi_robust), alpha = 0.1, fill = 'blue') +
+  
+  theme(legend.position = 'none') +
+  xlab(expression('Specific Conductance (' * mu * S/cm *')')) +
+  ylab('Chloride (mg/l)')
+```
+Note that the robust regression (blue)line is parallel to, but somewhat below the
+other two regression lines. Error bands (95% confidence intervals of
+prediction) overlap.  Many observations fall outside of those 95% confidence 
+intervals,  especially on the high side, suggesting some process may be
+generating unusually high chloride values.  The NUMBER of high values is not
+extreme, but they are further from the 95% confidence band than we might expect.
+(As also  shown bu the histogram of deviations, above).
+
+# Polynomial Regressions
+In reviewing preliminary models, I observed that the relationship between
+conductivity and chlorides is not quite linear. This actually corresponds to 
+theory, which suggests we should see a shallow convex up relationship.
+
+We fit nested polynomial models to test if that's reasonable.
+
+```{r}
+poly_lm_1 <- lm(Chloride ~ SpC + I(SpC^2) + I(SpC^3) + I(SpC^4), 
+              data = chl_data,
+              subset = ! Outlier)
+
+anova(poly_lm_1)
+```
+
+```{r}
+summary(poly_lm_1)
+```
+Note that although the polynomial terms are significant by F test, they are not 
+individually significant by T test, probably because of co-linearity.  We can 
+fit orthogonal polynomials using the `poly()` function.
+
+Although a third order polynomial fits better than a second order polynomial, 
+we stick with a second order polynomial for its simplicity. a Very lightly
+smoothed GAM might also work.
+
+```{r}
+poly_lm <- lm(Chloride ~ poly(SpC,2), 
+              data = chl_data,
+              subset = ! Outlier)
+anova(poly_lm)
+summary(poly_lm)
+```
+
+That fits better than the linear model
+```{r}
+anova(wo_lm, poly_lm)
+
+```
+
+Theory suggests concentration of solutes should combine a linear term with a 
+term raised to the three half power. 
+
+fitting a square root term, and this model actually fits
+far better than the straight polynomial model.
+```{r}
+theory_lm <-  lm(Chloride ~ SpC + I(SpC^1.5), 
+              data = chl_data,
+              subset = ! Outlier)
+
+sqrt_lm <- lm(Chloride ~ SpC + sqrt(SpC), 
+              data = chl_data,
+              subset = ! Outlier)
+anova(wo_lm, sqrt_lm, theory_lm, poly_lm)
+```
+
+The square root model fits the best. Since all three models have the same 
+degrees of freedom, there is no formal statistical test of what "better" means here.  
+
+# Compare Polynomial Models
+```{r}
+df <- tibble(SpC = seq(0, 3500, 100))
+
+p_wo  <- predict(wo_lm, newdata = df, interval = "prediction")
+p_poly  <- predict(poly_lm, newdata = df, interval = "prediction")
+p_sqrt <- predict(sqrt_lm, newdata = df, interval = "prediction")
+
+df <- df %>%
+  mutate( pp_wo = p_wo[,1], pp_poly = p_poly[,1], pp_sqrt = p_sqrt[,1]) %>%
+  mutate( low_wo = p_wo[,2], low_poly = p_poly[,2], low_sqrt = p_sqrt[,2]) %>%
+  mutate( hi_wo = p_wo[,3], hi_poly = p_poly[,3], hi_sqrt = p_sqrt[,3])
+```
+
+
+```{r fig.width = 7, fig.height = 5}
+ggplot(df, (aes(x = SpC))) +
+  geom_point(data = chl_data, 
+             mapping = aes(SpC, Chloride), alpha = 0.1) +
+  #geom_smooth(data = chl_data, mapping = aes(SpC, Chloride), 
+  #            method = lm, formula = y~ poly(x,2), se = FALSE) +
+  geom_line(aes(y = pp_wo), color = 'black') +
+  geom_ribbon(aes(ymin = low_wo, ymax = hi_wo), alpha = 0.1, fill = 'black') +
+  geom_line(data = df, mapping = aes(SpC, pp_poly), color = 'red') +
+  geom_ribbon(aes(ymin = low_poly, ymax = hi_poly), alpha = 0.1, fill = 'red') +
+  #geom_line(data = df, mapping = aes(SpC, pp_sqrt), color = 'blue') +
+  #geom_ribbon(aes(ymin = low_sqrt, ymax = hi_sqrt), alpha = 0.1, fill = 'blue') +
+  
+  theme(legend.position = 'none') +
+  xlab(expression('Specific Conductance (' * mu * S/cm *')')) +
+  ylab('Chloride (mg/l)')
+```
+
+#  Multiple Regression Models
+The wide outliers suggest our models are incomplete, omitting some
+predictor that could help explain extreme values.  We can try to look at
+that by adding the few predictors we have available.
+
+We chose not to include the Site term in the interactions, as we have few 
+observations from some sites in several years, leading to risk of bias.
+We might be better off fitting a hierarchical model, with random intercepts and
+slopes by Site.  We do not pursue that in this quick and dirty analysis.
+
+## Maximum Model
+```{r}
+full_lm <- lm(Chloride ~ Year + Site.ID + (poly(SpC,2) + Sample.Type)^2, 
+              data = chl_data,
+              subset = ! Outlier)
+anova(full_lm)
+```
+
+## Step Model Selection
+All terms are "significant", but it's worth wondering if they are informative.
+We test with `step()`, which compares models based on AIC.
+```{r}
+step_lm <- step(full_lm)
+anova(step_lm)
+
+
+```
+The `step()` function retains all terms from the full model 
+
+```{r}
+plot(step_lm)
+```
+So while the "optimal"  model includes site and sample type terms, as well 
+a interactions with SpC, the model weaknesses are little improved.  The 
+model still does not do a very good job of predicting outliers.
+
+```{r}
+summary(step_lm)
+```
+
+Note that in this formulation, the second order polynomial term is involved with 
+a large and significant interaction. The polynomial may only be needed to model 
+storm event samples. This deserves further exploration, by plotting data and
+predictions, by Sample Type, but we do not bother.  At a guess, the curvature
+in part reflects the fact that both chlorides and conductivity tend to be 
+slightly lower during storm events.
+
+## Marginal Means and Trends
+```{r fig.width = 7}
+emmip(step_lm,  Sample.Type ~  SpC, at = list(SpC = 10:300 * 10))
+```
+That's some indications that the Conductivity:Chloride relationship differs by
+Sample Type. note, however, that we actually have relatively little data for
+storm samples from the upper ranges, suggesting the main effect is that the 
+conductivity - chloride slope may be less steep for the Storm samples.
+
+```{r}
+final_lm <- lm(Chloride ~ SpC + I(SpC^2) +
+                 Site.ID + Year + 
+                 Sample.Type + SpC:Sample.Type, 
+              data = chl_data,
+              subset = ! Outlier)
+anova(final_lm, step_lm)
+```
+So the slightly simplified model (omitting interaction terms for the curvature)
+is slightly worse than the full model.
+
+```{r}
+emmip(final_lm,  Sample.Type ~ SpC, at = list(SpC = 10:300 * 10))
+```
+
+WE can regain the high recent salinity conclusions we found for State of the Bay.
+```{r}
+emms <- summary(emmeans(final_lm, "Year"))
+
+plot(emms)
+```
+
+And can examine differences among sites. These have been sorted by median 
+chlorides.  I fear there's some bias here because of different sampling
+histories that can't be fully resolved.  But note only the two (or maybe
+three) highest salinity sites are significantly different from the others.
+
+```{r}
+emms <- summary(emmeans(final_lm, "Site.ID"))
+
+plot(emms)
+```
+
+
