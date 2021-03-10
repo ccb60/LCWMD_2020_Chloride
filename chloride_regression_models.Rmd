@@ -315,24 +315,42 @@ Sample Type. note, however, that we actually have relatively little data for
 storm samples from the upper ranges, suggesting the main effect is that the 
 conductivity - chloride slope may be less steep for the Storm samples.
 
+I use a simplified model to generate a nice interaction plot to show the 
+relationships.
 ```{r}
-final_lm <- lm(Chloride ~ SpC + I(SpC^2) +
-                 Site.ID + Year + 
-                 Sample.Type + SpC:Sample.Type, 
+simplified_lm <- lm(Chloride ~ poly(SpC,2) * Sample.Type,
               data = chl_data,
               subset = ! Outlier)
-anova(final_lm, step_lm)
+anova(simplified_lm, step_lm)
 ```
-So the slightly simplified model (omitting interaction terms for the curvature)
-is slightly worse than the full model.
+So the  simplified model is definitely  worse than the full model. The 
+difference is from omitting the Site and Year terms.
 
+# Combined Graphic
 ```{r}
-emmip(final_lm,  Sample.Type ~ SpC, at = list(SpC = 10:300 * 10))
+emms <- emmeans(simplified_lm,  c('Sample.Type', 'SpC'),
+             at = list(SpC = 1:30 * 100))
+df <- summary(emms)
 ```
 
+```{r fig.width = 7, fig.height = 5}
+ggplot(df, (aes(x = SpC, y = emmean, color = Sample.Type))) +
+  geom_point(data = chl_data, 
+             mapping = aes(SpC, Chloride), alpha = 0.1) +
+  #geom_smooth(data = chl_data, mapping = aes(SpC, Chloride), 
+  #            method = lm, formula = y~ poly(x,2), se = FALSE) +
+  geom_line() +
+  scale_color_discrete(name = 'Sample Type') +
+  theme(legend.position = 'bottom') +
+  xlab(expression('Specific Conductance (' * mu * S/cm *')')) +
+  ylab('Chloride (mg/l)')
+```
+
+
+# Additional Observations
 WE can regain the high recent salinity conclusions we found for State of the Bay.
 ```{r}
-emms <- summary(emmeans(final_lm, "Year"))
+emms <- summary(emmeans(step_lm, "Year"))
 
 plot(emms)
 ```
@@ -343,9 +361,59 @@ histories that can't be fully resolved.  But note only the two (or maybe
 three) highest salinity sites are significantly different from the others.
 
 ```{r}
-emms <- summary(emmeans(final_lm, "Site.ID"))
+emms <- summary(emmeans(step_lm, "Site.ID"))
 
 plot(emms)
 ```
+
+# Conclusions
+1. As suspected, the use of a "resistant" regression methods has little effect 
+on the Chloride concentration predictions. 
+
+2.We have something on the order of 25 or 30 observations that fall outside --
+and often well outside -- of those 95% prediction intervals. That's about the
+number we expect, as we have a few under 800 observations, so should expect
+about 800 * 0.05 = 40 observations outside the 95% confidence intervals. But the
+deviations from prediction for those points are large. The distribution of
+errors is both slightly skewed (expected, since chloride < 0 is impossible), and
+heavy-tailed (a bit of a surprise). The best interpretation of these data is
+that for some unknown reason, we sometimes (rarely -- maybe a couple percent of
+observations) get chloride values well above what we expect based on
+conductivity.
+
+3. The multivariate models show "significant" differences in the conductivity to
+chloride regression relationships among sites and between melt, baseflow, and
+storm samples. This is not a surprise. We've seen that in prior years, but with
+more data, the differences are becoming "more significant". They're still small
+effects. 
+
+4. I noticed an odd pattern in the model results. When fitting multivariate
+models, several sites with high average chloride ALSO tend to show chlorides
+slightly higher at a given conductivity (or at least that's what the MODEL
+shows). That got me wondering why that might be. One possibility is that the
+simple linear models are not appropriate. If there's "really" some curvature to
+the conductivity - chloride regression, we'd expect exactly this result.
+
+5. Digging a little into the theory of conductivity suggests a SMALL
+non-linearity in the conductivity-chloride relationship is to be expected. For
+"ideal solutions" of ions that dissociate completely in solution, conductivity
+increases slightly more slowly per unit increase in concentration, as the
+concentration increases. That means predicted concentrations based on
+conductivity should go up slightly faster at higher conductivities. The effect
+is small (much smaller than our 95% prediction intervals), but real. Fitting
+polynomial models does significantly improve model fit.
+
+6. We now have evidence that there are subtle differences in the
+chloride-conductivity relationship between base flow, storm flow, and melt
+events. The differences are small. While they are "significant", they reflect
+the fact that most of our high conductivity samples are associated with melt
+events and most of our low conductivity samples are from storm events. Given the
+small (expected) curvature in the conductivity-chloride relationship, the
+analysis is fitting curves to data pulled from different ranges. Observed slope
+is lower for lower conductivities -- associated here with the storm events --
+and higher for the higher conductivities -- associated with melt events.
+
+
+ 
 
 
